@@ -1,0 +1,6 @@
+{
+  "name": "Conversor MKV para MP4",
+  "description": "Converta seus arquivos MKV para MP4 de forma rápida, segura e 100% local no seu navegador, sem fazer upload de vídeos para a internet.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
