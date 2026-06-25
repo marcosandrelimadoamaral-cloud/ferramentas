@@ -62,6 +62,14 @@ export default function DropZone({ onFileSelected, selectedFile, onClear }: Drop
 
   return (
     <div className="flex flex-col gap-6">
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        accept=".mkv,.avi,.mov,.webm,.flv,.mp4"
+        onChange={handleFileInput}
+      />
+
       {!selectedFile ? (
         <motion.div
           id="dropzone-container"
@@ -78,14 +86,6 @@ export default function DropZone({ onFileSelected, selectedFile, onClear }: Drop
           onDrop={handleDrop}
           onClick={onButtonClick}
         >
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            accept=".mkv,.avi,.mov,.webm,.flv,.mp4"
-            onChange={handleFileInput}
-          />
-
           <div className="w-16 h-16 bg-zinc-900 border border-zinc-800 rounded-2xl flex items-center justify-center mb-5 text-zinc-400 group-hover:text-indigo-400 transition-colors">
             <Upload className="w-8 h-8 text-indigo-400" />
           </div>

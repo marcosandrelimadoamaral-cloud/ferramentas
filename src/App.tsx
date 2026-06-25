@@ -175,9 +175,10 @@ export default function App() {
         setIsFileReading(false);
       }
     };
-    reader.onerror = (err) => {
-      console.error('FileReader error:', err);
-      setFileReadError('Erro de permissão no navegador ao ler o arquivo. Tente selecionar o arquivo clicando em vez de arrastar, ou use outro navegador.');
+    reader.onerror = () => {
+      const errorDetail = reader.error ? `${reader.error.name}: ${reader.error.message}` : 'Erro desconhecido';
+      console.error('FileReader error:', reader.error);
+      setFileReadError(`Erro de permissão no navegador ao ler o arquivo (${errorDetail}). Tente selecionar o arquivo clicando em vez de arrastar, ou use outro navegador.`);
       setIsFileReading(false);
     };
     reader.readAsArrayBuffer(selectedFile);
