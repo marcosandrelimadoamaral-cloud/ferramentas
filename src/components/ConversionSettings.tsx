@@ -93,12 +93,12 @@ export default function ConversionSettings({ settings, onSettingsChange, disable
               none: 'Sem Áudio (Mudo)'
             };
             const desc: Record<AudioMode, string> = {
-              copy: 'Lossless',
-              aac: 'Alta comp.',
-              none: 'Remover trilha'
+              copy: settings.mode === 'remux' ? 'Rápido (pode falhar se codec incompatível)' : 'Cópia Lossless',
+              aac: settings.mode === 'remux' ? 'Compatível (Vídeo Copiado + Áudio AAC)' : 'Áudio AAC Comp.',
+              none: 'Sem trilha de áudio'
             };
-            // Disable AAC conversion if remuxing is on, or automatically switch to transcode
-            const isCopyOnly = settings.mode === 'remux' && mode !== 'copy' && mode !== 'none';
+            // Allow AAC conversion during remux mode (copies video directly, converts audio to AAC!)
+            const isCopyOnly = false;
 
             return (
               <button
@@ -109,13 +109,10 @@ export default function ConversionSettings({ settings, onSettingsChange, disable
                   updateSetting('audioMode', mode);
                 }}
                 className={`flex flex-col items-center justify-center p-2.5 rounded-xl border text-center transition-all ${
-                  isCopyOnly ? 'opacity-30 cursor-not-allowed' : ''
-                } ${
                   settings.audioMode === mode
                     ? 'border-indigo-500 bg-indigo-500/5 text-zinc-200'
                     : 'border-zinc-800 bg-zinc-900/10 hover:border-zinc-700 text-zinc-400'
                 }`}
-                title={isCopyOnly ? 'Faça a Transcodificação Completa para poder recodificar o áudio' : ''}
               >
                 <span className="text-xs font-medium">{labels[mode]}</span>
                 <span className="text-3xs text-zinc-500 mt-0.5 font-mono">{desc[mode]}</span>
@@ -123,9 +120,9 @@ export default function ConversionSettings({ settings, onSettingsChange, disable
             );
           })}
         </div>
-        {settings.mode === 'remux' && settings.audioMode !== 'copy' && settings.audioMode !== 'none' && (
+        {settings.mode === 'remux' && settings.audioMode === 'copy' && (
           <p className="text-3xs text-amber-400 mt-1">
-            * Nota: Para forçar a compressão ou conversão de áudio para AAC, o modo "Transcodificação" é recomendado.
+            💡 <b>Dica:</b> Se o seu arquivo MKV der erro na conversão rápida, altere a faixa de áudio para <b>"Forçar AAC"</b>. Isso copia o vídeo instantaneamente mas reconverte o áudio incompatível (como DTS/FLAC), resolvendo 99% das falhas!
           </p>
         )}
       </div>

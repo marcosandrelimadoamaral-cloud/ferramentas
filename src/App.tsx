@@ -53,6 +53,8 @@ export default function App() {
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const conversionAborted = useRef<boolean>(false);
+  const logsRef = useRef<string[]>([]);
+  const [suggestedFixAction, setSuggestedFixAction] = useState<'transcode' | 'force_aac' | null>(null);
 
   // Auto-init FFmpeg in background when app mounts
   useEffect(() => {
@@ -73,6 +75,7 @@ export default function App() {
 
     // Technical Log parser to populate detailed visual stats in the terminal UI
     ffmpeg.on('log', ({ message }) => {
+      logsRef.current.push(message);
       setProgress((prev) => {
         const nextLogs = [...prev.logs, message];
         
@@ -183,7 +186,36 @@ export default function App() {
     handleClear();
   };
 
+  const applySmartFix = (fixType: 'transcode' | 'force_aac') => {
+    if (fixType === 'force_aac') {
+      const nextSettings: VideoSettings = {
+        ...settings,
+        mode: 'remux',
+        audioMode: 'aac',
+      };
+      setSettings(nextSettings);
+      setTimeout(() => {
+        performConversion(nextSettings);
+      }, 50);
+    } else {
+      const nextSettings: VideoSettings = {
+        ...settings,
+        mode: 'transcode',
+        audioMode: 'aac',
+        resolution: 'original',
+      };
+      setSettings(nextSettings);
+      setTimeout(() => {
+        performConversion(nextSettings);
+      }, 50);
+    }
+  };
+
   const handleConvert = async () => {
+    await performConversion(settings);
+  };
+
+  const performConversion = async (activeSettings: VideoSettings) => {
     if (!file) return;
     conversionAborted.current = false;
 
@@ -203,7 +235,9 @@ export default function App() {
       size: '',
       logs: ['Iniciando sistema de conversão...', 'Carregando arquivo de vídeo na memória local...'],
     });
+    logsRef.current = []; // Clear log ref
     setErrorMsg(null);
+    setSuggestedFixAction(null);
 
     try {
       const inputName = file.name;
@@ -218,38 +252,45 @@ export default function App() {
       const args: string[] = ['-i', tempInput];
 
       // Trim options
-      if (settings.trim.enabled) {
-        if (settings.trim.start) {
-          args.push('-ss', settings.trim.start);
+      if (activeSettings.trim.enabled) {
+        if (activeSettings.trim.start) {
+          args.push('-ss', activeSettings.trim.start);
         }
-        if (settings.trim.duration) {
-          args.push('-t', settings.trim.duration);
+        if (activeSettings.trim.duration) {
+          args.push('-t', activeSettings.trim.duration);
         }
       }
 
-      if (settings.mode === 'remux') {
-        // Remuxing mode (direct stream copy - lossless & instant!)
-        // Disable subtitle copying since MP4 has strict formatting constraints for sub tracks
-        args.push('-c', 'copy', '-sn');
+      if (activeSettings.mode === 'remux') {
+        if (activeSettings.audioMode === 'copy') {
+          // Pure direct copy of all streams (extremely fast, but fragile if audio codec is incompatible)
+          args.push('-c', 'copy', '-sn');
+        } else if (activeSettings.audioMode === 'aac') {
+          // Smart Copy: Copy video stream directly (instant!), transcode audio to standard AAC for maximum compatibility
+          args.push('-c:v', 'copy', '-c:a', 'aac', '-sn');
+        } else if (activeSettings.audioMode === 'none') {
+          // Copy video stream directly, remove audio track
+          args.push('-c:v', 'copy', '-an', '-sn');
+        }
       } else {
         // Transcoding mode (re-encode video using H.264 for maximum compatibility)
-        if (settings.resolution === 'original') {
+        if (activeSettings.resolution === 'original') {
           args.push('-c:v', 'libx264', '-preset', 'ultrafast');
         } else {
           let scale = '';
-          if (settings.resolution === '1080p') scale = 'scale=1920:1080';
-          else if (settings.resolution === '720p') scale = 'scale=1280:720';
-          else if (settings.resolution === '480p') scale = 'scale=854:480';
+          if (activeSettings.resolution === '1080p') scale = 'scale=1920:1080';
+          else if (activeSettings.resolution === '720p') scale = 'scale=1280:720';
+          else if (activeSettings.resolution === '480p') scale = 'scale=854:480';
           
           args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-vf', scale);
         }
 
         // Audio options for transcode
-        if (settings.audioMode === 'copy') {
+        if (activeSettings.audioMode === 'copy') {
           args.push('-c:a', 'copy');
-        } else if (settings.audioMode === 'aac') {
-          args.push('-c:a', 'aac', '-b:a', settings.audioBitrate);
-        } else if (settings.audioMode === 'none') {
+        } else if (activeSettings.audioMode === 'aac') {
+          args.push('-c:a', 'aac', '-b:a', activeSettings.audioBitrate);
+        } else if (activeSettings.audioMode === 'none') {
           args.push('-an');
         }
       }
@@ -261,10 +302,14 @@ export default function App() {
       args.push('-y', tempOutput);
 
       // Execute conversion
-      await ffmpeg.exec(args);
+      const exitCode = await ffmpeg.exec(args);
 
       if (conversionAborted.current) {
         return;
+      }
+
+      if (exitCode !== 0) {
+        throw new Error(`FFMPEG_EXIT_CODE_${exitCode}`);
       }
 
       // Read resulting file from WASM filesystem
@@ -288,7 +333,33 @@ export default function App() {
     } catch (err: any) {
       console.error('Conversion failed:', err);
       setStatus('error');
-      setErrorMsg('A conversão falhou. Isso acontece se o arquivo original estiver corrompido ou contiver faixas incompatíveis. Tente usar a "Transcodificação Completa" nas opções abaixo.');
+
+      // Smart logs diagnostics
+      const diagnosticLogs = (logsRef.current.join('\n') + '\n' + (err.message || '')).toLowerCase();
+
+      // Analyze error patterns
+      if (diagnosticLogs.includes('could not find tag for codec') || 
+          diagnosticLogs.includes('not supported in the mp4 container') ||
+          diagnosticLogs.includes('not supported in container') ||
+          diagnosticLogs.includes('tag for codec') ||
+          diagnosticLogs.includes('invalid audio') ||
+          diagnosticLogs.includes('error selecting an encoder') ||
+          err.message?.includes('FFMPEG_EXIT_CODE_')) {
+        
+        if (activeSettings.mode === 'remux' && activeSettings.audioMode === 'copy') {
+          setErrorMsg('O arquivo MKV possui faixas de áudio incompatíveis com cópia direta (como DTS, E-AC3 ou FLAC). Use a nossa Correção Inteligente para converter apenas o áudio para AAC e manter a alta velocidade!');
+          setSuggestedFixAction('force_aac');
+        } else {
+          setErrorMsg('A conversão falhou devido a codecs incompatíveis na faixa de áudio ou vídeo. Recomenda-se a Transcodificação Completa.');
+          setSuggestedFixAction('transcode');
+        }
+      } else if (diagnosticLogs.includes('cannot enlarge memory arrays') || diagnosticLogs.includes('out of memory')) {
+        setErrorMsg('O navegador ficou sem memória WebAssembly para processar este arquivo gigante de uma vez.');
+        setSuggestedFixAction(null);
+      } else {
+        setErrorMsg('A conversão falhou. Isso acontece se o arquivo contiver faixas incompatíveis com a cópia direta para MP4. Tente usar a Correção Inteligente abaixo.');
+        setSuggestedFixAction('force_aac');
+      }
     }
   };
 
@@ -418,6 +489,31 @@ export default function App() {
                     onCancel={handleCancel}
                     errorMsg={errorMsg}
                   />
+
+                  {status === 'error' && suggestedFixAction && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="p-5 border border-amber-500/20 bg-amber-950/40 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mt-2"
+                    >
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs font-bold text-amber-400 uppercase tracking-wide flex items-center gap-1.5">
+                          💡 Correção Inteligente Disponível
+                        </span>
+                        <p className="text-2xs text-zinc-300 leading-relaxed max-w-xl">
+                          {suggestedFixAction === 'force_aac' 
+                            ? 'O arquivo MKV possui faixas de áudio incompatíveis com cópia direta (ex: DTS ou FLAC). Podemos copiar o vídeo instantaneamente e converter apenas o áudio para AAC.'
+                            : 'O decodificador recomenda usar o modo de Transcodificação Completa para processar todas as faixas e recriar o vídeo em H.264 compatível.'}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => applySmartFix(suggestedFixAction)}
+                        className="bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold py-2.5 px-4 rounded-xl transition-all shadow-md active:scale-95 flex-shrink-0 cursor-pointer"
+                      >
+                        {suggestedFixAction === 'force_aac' ? 'Corrigir e Converter (Rápido)' : 'Mudar para Transcodificação'}
+                      </button>
+                    </motion.div>
+                  )}
 
                   {/* Results video player and download options */}
                   {isSuccess && file && (
