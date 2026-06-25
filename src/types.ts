@@ -14,6 +14,7 @@ export interface VideoSettings {
   audioBitrate: '128k' | '192k' | '256k';
   resolution: ResolutionMode;
   trim: TrimSettings;
+  outputFormat: 'mp4' | 'mp3';
 }
 
 export type ConversionStatus = 'idle' | 'loading_ffmpeg' | 'ready' | 'converting' | 'success' | 'error';

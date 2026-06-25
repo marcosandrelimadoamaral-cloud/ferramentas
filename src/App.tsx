@@ -37,6 +37,7 @@ export default function App() {
       start: '0',
       duration: '',
     },
+    outputFormat: 'mp4',
   });
 
   const [progress, setProgress] = useState<ConversionProgressInfo>({
@@ -243,7 +244,7 @@ export default function App() {
       const inputName = file.name;
       const ext = inputName.split('.').pop() || 'mkv';
       const tempInput = `input.${ext}`;
-      const tempOutput = 'output.mp4';
+      const tempOutput = activeSettings.outputFormat === 'mp3' ? 'output.mp3' : 'output.mp4';
 
       // Write uploaded file to virtual WASM filesystem using robust direct ArrayBuffer
       const arrayBuffer = await file.arrayBuffer();
@@ -274,42 +275,49 @@ export default function App() {
         }
       }
 
-      if (activeSettings.mode === 'remux') {
-        if (activeSettings.audioMode === 'copy') {
-          // Pure direct copy of all streams (extremely fast, but fragile if audio codec is incompatible)
-          args.push('-c', 'copy', '-sn');
-        } else if (activeSettings.audioMode === 'aac') {
-          // Smart Copy: Copy video stream directly (instant!), transcode audio to standard AAC for maximum compatibility
-          args.push('-c:v', 'copy', '-c:a', 'aac', '-sn');
-        } else if (activeSettings.audioMode === 'none') {
-          // Copy video stream directly, remove audio track
-          args.push('-c:v', 'copy', '-an', '-sn');
-        }
+      if (activeSettings.outputFormat === 'mp3') {
+        // MP3 extraction mode: Disable video, encode to high quality MP3
+        args.push('-vn');
+        args.push('-c:a', 'libmp3lame', '-b:a', activeSettings.audioBitrate);
       } else {
-        // Transcoding mode (re-encode video using H.264 for maximum compatibility)
-        if (activeSettings.resolution === 'original') {
-          args.push('-c:v', 'libx264', '-preset', 'ultrafast');
+        // Video MP4 modes
+        if (activeSettings.mode === 'remux') {
+          if (activeSettings.audioMode === 'copy') {
+            // Pure direct copy of all streams (extremely fast, but fragile if audio codec is incompatible)
+            args.push('-c', 'copy', '-sn');
+          } else if (activeSettings.audioMode === 'aac') {
+            // Smart Copy: Copy video stream directly (instant!), transcode audio to standard AAC for maximum compatibility
+            args.push('-c:v', 'copy', '-c:a', 'aac', '-sn');
+          } else if (activeSettings.audioMode === 'none') {
+            // Copy video stream directly, remove audio track
+            args.push('-c:v', 'copy', '-an', '-sn');
+          }
         } else {
-          let scale = '';
-          if (activeSettings.resolution === '1080p') scale = 'scale=1920:1080';
-          else if (activeSettings.resolution === '720p') scale = 'scale=1280:720';
-          else if (activeSettings.resolution === '480p') scale = 'scale=854:480';
-          
-          args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-vf', scale);
+          // Transcoding mode (re-encode video using H.264 for maximum compatibility)
+          if (activeSettings.resolution === 'original') {
+            args.push('-c:v', 'libx264', '-preset', 'ultrafast');
+          } else {
+            let scale = '';
+            if (activeSettings.resolution === '1080p') scale = 'scale=1920:1080';
+            else if (activeSettings.resolution === '720p') scale = 'scale=1280:720';
+            else if (activeSettings.resolution === '480p') scale = 'scale=854:480';
+            
+            args.push('-c:v', 'libx264', '-preset', 'ultrafast', '-vf', scale);
+          }
+
+          // Audio options for transcode
+          if (activeSettings.audioMode === 'copy') {
+            args.push('-c:a', 'copy');
+          } else if (activeSettings.audioMode === 'aac') {
+            args.push('-c:a', 'aac', '-b:a', activeSettings.audioBitrate);
+          } else if (activeSettings.audioMode === 'none') {
+            args.push('-an');
+          }
         }
 
-        // Audio options for transcode
-        if (activeSettings.audioMode === 'copy') {
-          args.push('-c:a', 'copy');
-        } else if (activeSettings.audioMode === 'aac') {
-          args.push('-c:a', 'aac', '-b:a', activeSettings.audioBitrate);
-        } else if (activeSettings.audioMode === 'none') {
-          args.push('-an');
-        }
+        // Metadata optimization for fast browser playback/streaming
+        args.push('-movflags', '+faststart');
       }
-
-      // Metadata optimization for fast browser playback/streaming
-      args.push('-movflags', '+faststart');
 
       // Force overwrite output file in virtual filesystem
       args.push('-y', tempOutput);
@@ -329,11 +337,12 @@ export default function App() {
       const data = await ffmpeg.readFile(tempOutput);
       
       // Convert to blob URL
-      const mp4Blob = new Blob([data as any], { type: 'video/mp4' });
-      const mp4Url = URL.createObjectURL(mp4Blob);
+      const mimeType = activeSettings.outputFormat === 'mp3' ? 'audio/mp3' : 'video/mp4';
+      const outputBlob = new Blob([data as any], { type: mimeType });
+      const mp4Url = URL.createObjectURL(outputBlob);
 
       setOutputUrl(mp4Url);
-      setOutputSize(mp4Blob.size);
+      setOutputSize(outputBlob.size);
       setStatus('success');
 
       // Cleanup virtual filesystem to free up precious browser memory
@@ -349,6 +358,7 @@ export default function App() {
 
       // Smart logs diagnostics
       const diagnosticLogs = (logsRef.current.join('\n') + '\n' + (err.message || '')).toLowerCase();
+      const rawErrorStr = err.message || err.toString() || 'Erro desconhecido';
 
       // Analyze error patterns
       if (diagnosticLogs.includes('could not find tag for codec') || 
@@ -360,17 +370,17 @@ export default function App() {
           err.message?.includes('FFMPEG_EXIT_CODE_')) {
         
         if (activeSettings.mode === 'remux' && activeSettings.audioMode === 'copy') {
-          setErrorMsg('O arquivo MKV possui faixas de áudio incompatíveis com cópia direta (como DTS, E-AC3 ou FLAC). Use a nossa Correção Inteligente para converter apenas o áudio para AAC e manter a alta velocidade!');
+          setErrorMsg(`O arquivo MKV possui faixas de áudio incompatíveis com cópia direta (como DTS, E-AC3 ou FLAC). Use a nossa Correção Inteligente para converter apenas o áudio para AAC e manter a alta velocidade! (Detalhes: ${rawErrorStr})`);
           setSuggestedFixAction('force_aac');
         } else {
-          setErrorMsg('A conversão falhou devido a codecs incompatíveis na faixa de áudio ou vídeo. Recomenda-se a Transcodificação Completa.');
+          setErrorMsg(`A conversão falhou devido a codecs incompatíveis na faixa de áudio ou vídeo. Recomenda-se a Transcodificação Completa ou extração para MP3. (Detalhes: ${rawErrorStr})`);
           setSuggestedFixAction('transcode');
         }
       } else if (diagnosticLogs.includes('cannot enlarge memory arrays') || diagnosticLogs.includes('out of memory')) {
-        setErrorMsg('O navegador ficou sem memória WebAssembly para processar este arquivo gigante de uma vez.');
+        setErrorMsg(`O navegador ficou sem memória WebAssembly para processar este arquivo. Tente extrair apenas o áudio para MP3 (opção nas configurações), que consome pouquíssima memória! (Detalhes: ${rawErrorStr})`);
         setSuggestedFixAction(null);
       } else {
-        setErrorMsg('A conversão falhou. Isso acontece se o arquivo contiver faixas incompatíveis com a cópia direta para MP4. Tente usar a Correção Inteligente abaixo.');
+        setErrorMsg(`A conversão falhou (${rawErrorStr}). Isso acontece se o arquivo original contiver faixas incompatíveis com o contêiner MP4. Tente usar a Correção Inteligente abaixo ou mude o formato para MP3 nas opções.`);
         setSuggestedFixAction('force_aac');
       }
     }
@@ -536,6 +546,7 @@ export default function App() {
                       outputUrl={outputUrl}
                       outputSize={outputSize}
                       onReset={handleReset}
+                      outputFormat={settings.outputFormat}
                     />
                   )}
 
