@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { toBlobURL } from '@ffmpeg/util';
 import { VideoSettings, ConversionStatus, ConversionProgressInfo } from './types';
 
 // Components
@@ -245,8 +245,21 @@ export default function App() {
       const tempInput = `input.${ext}`;
       const tempOutput = 'output.mp4';
 
-      // Write uploaded file to virtual WASM filesystem
-      await ffmpeg.writeFile(tempInput, await fetchFile(file));
+      // Write uploaded file to virtual WASM filesystem using robust direct ArrayBuffer
+      const arrayBuffer = await file.arrayBuffer();
+      const fileData = new Uint8Array(arrayBuffer);
+      
+      setProgress((prev) => ({
+        ...prev,
+        logs: [...prev.logs, 'Arquivo carregado na memória local com sucesso!', 'Escrevendo arquivo no sistema de arquivos virtual do FFmpeg...']
+      }));
+
+      await ffmpeg.writeFile(tempInput, fileData);
+
+      setProgress((prev) => ({
+        ...prev,
+        logs: [...prev.logs, 'Arquivo preparado! Iniciando execução do FFmpeg com os parâmetros selecionados...']
+      }));
 
       // Build precise FFmpeg CLI arguments based on user configs
       const args: string[] = ['-i', tempInput];
