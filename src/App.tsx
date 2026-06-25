@@ -14,7 +14,7 @@ import Transcriptor from './components/Transcriptor';
 import WordConverter from './components/WordConverter';
 
 // Icons
-import { Video, Cpu, Sparkles, FileText, Settings, ShieldCheck, FileAudio } from 'lucide-react';
+import { Video, Cpu, Sparkles, FileText, Settings, ShieldCheck, FileAudio, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 type ActiveTab = 'mkv' | 'transcribe' | 'word';
@@ -56,6 +56,11 @@ export default function App() {
   const conversionAborted = useRef<boolean>(false);
   const logsRef = useRef<string[]>([]);
   const [suggestedFixAction, setSuggestedFixAction] = useState<'transcode' | 'force_aac' | null>(null);
+
+  const [isFileReading, setIsFileReading] = useState<boolean>(false);
+  const [fileReadProgress, setFileReadProgress] = useState<number>(0);
+  const [fileReadError, setFileReadError] = useState<string | null>(null);
+  const fileDataRef = useRef<Uint8Array | null>(null);
 
   // Auto-init FFmpeg in background when app mounts
   useEffect(() => {
@@ -137,6 +142,11 @@ export default function App() {
 
   const handleFileSelected = (selectedFile: File) => {
     setFile(selectedFile);
+    setIsFileReading(true);
+    setFileReadProgress(0);
+    setFileReadError(null);
+    fileDataRef.current = null;
+
     // Auto reset output states when a new file is uploaded
     setOutputUrl(null);
     setOutputSize(null);
@@ -149,6 +159,29 @@ export default function App() {
       logs: [],
     });
     setErrorMsg(null);
+    setSuggestedFixAction(null);
+
+    // Read the file buffer IMMEDIATELY while the browser holds the file reference permission
+    const reader = new FileReader();
+    reader.onprogress = (event) => {
+      if (event.lengthComputable) {
+        const percent = Math.round((event.loaded / event.total) * 100);
+        setFileReadProgress(percent);
+      }
+    };
+    reader.onload = (event) => {
+      if (event.target?.result) {
+        fileDataRef.current = new Uint8Array(event.target.result as ArrayBuffer);
+        setIsFileReading(false);
+      }
+    };
+    reader.onerror = (err) => {
+      console.error('FileReader error:', err);
+      setFileReadError('Erro de permissão no navegador ao ler o arquivo. Tente selecionar o arquivo clicando em vez de arrastar, ou use outro navegador.');
+      setIsFileReading(false);
+    };
+    reader.readAsArrayBuffer(selectedFile);
+
     if (status === 'error' || status === 'success') {
       setStatus(ffmpegRef.current ? 'ready' : 'idle');
     }
@@ -156,6 +189,10 @@ export default function App() {
 
   const handleClear = () => {
     setFile(null);
+    setIsFileReading(false);
+    setFileReadProgress(0);
+    setFileReadError(null);
+    fileDataRef.current = null;
     setOutputUrl(null);
     setOutputSize(null);
     setProgress({
@@ -167,6 +204,7 @@ export default function App() {
       logs: [],
     });
     setErrorMsg(null);
+    setSuggestedFixAction(null);
     if (status === 'success' || status === 'error') {
       setStatus(ffmpegRef.current ? 'ready' : 'idle');
     }
@@ -246,9 +284,17 @@ export default function App() {
       const tempInput = `input.${ext}`;
       const tempOutput = activeSettings.outputFormat === 'mp3' ? 'output.mp3' : 'output.mp4';
 
-      // Write uploaded file to virtual WASM filesystem using robust direct ArrayBuffer
-      const arrayBuffer = await file.arrayBuffer();
-      const fileData = new Uint8Array(arrayBuffer);
+      // Write uploaded file to virtual WASM filesystem using robust cached or direct ArrayBuffer
+      let fileData = fileDataRef.current;
+      if (!fileData) {
+        setProgress((prev) => ({
+          ...prev,
+          logs: [...prev.logs, 'Lendo arquivo sob demanda (aguarde)...']
+        }));
+        const arrayBuffer = await file.arrayBuffer();
+        fileData = new Uint8Array(arrayBuffer);
+        fileDataRef.current = fileData;
+      }
       
       setProgress((prev) => ({
         ...prev,
@@ -480,24 +526,62 @@ export default function App() {
                         onClear={handleClear}
                       />
 
+                      {isFileReading && (
+                        <div className="border border-zinc-800 bg-zinc-950/40 rounded-2xl p-6 flex flex-col gap-3">
+                          <div className="flex items-center justify-between text-xs text-zinc-300 font-mono">
+                            <span className="flex items-center gap-2">
+                              <span className="w-2 h-2 bg-indigo-500 rounded-full animate-ping" />
+                              Lendo arquivo para a memória local do navegador...
+                            </span>
+                            <span className="text-indigo-400 font-bold">{fileReadProgress}%</span>
+                          </div>
+                          <div className="w-full bg-zinc-900 h-2 rounded-full overflow-hidden">
+                            <div 
+                              className="bg-indigo-500 h-full transition-all duration-150 ease-out rounded-full"
+                              style={{ width: `${fileReadProgress}%` }}
+                            />
+                          </div>
+                          <p className="text-3xs text-zinc-500 font-mono">
+                            Dica: Lendo o arquivo imediatamente para evitar que o navegador perca a permissão de acesso após alguns segundos de espera.
+                          </p>
+                        </div>
+                      )}
+
+                      {fileReadError && (
+                        <div className="border border-rose-500/20 bg-rose-950/10 rounded-2xl p-5 flex gap-3 text-xs text-rose-300">
+                          <AlertCircle className="w-5 h-5 shrink-0 text-rose-400" />
+                          <div className="flex flex-col gap-1">
+                            <span className="font-bold">Falha ao acessar arquivo</span>
+                            <p>{fileReadError}</p>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Step 2: Configure and trigger action */}
                       {file && (
                         <div className="flex flex-col gap-6">
                           <ConversionSettings
                             settings={settings}
                             onSettingsChange={setSettings}
-                            disabled={isConverting}
+                            disabled={isConverting || isFileReading}
                           />
 
                           {/* Big primary CTA Button to start converting */}
                           {status !== 'converting' && (
                             <button
                               onClick={handleConvert}
-                              disabled={isConverting || status === 'loading_ffmpeg'}
+                              disabled={isConverting || status === 'loading_ffmpeg' || isFileReading}
                               className="w-full flex items-center justify-center gap-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm py-4 px-6 rounded-2xl shadow-xl shadow-indigo-600/10 hover:shadow-indigo-600/20 active:scale-[0.99] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               <Cpu className="w-5 h-5" />
-                              {settings.mode === 'remux' ? 'Converter Agora (Instantâneo)' : 'Iniciar Transcodificação'}
+                              {isFileReading 
+                                ? `Aguarde, carregando arquivo (${fileReadProgress}%)...`
+                                : settings.outputFormat === 'mp3'
+                                  ? 'Extrair Áudio MP3'
+                                  : settings.mode === 'remux' 
+                                    ? 'Converter Agora (Instantâneo)' 
+                                    : 'Iniciar Transcodificação'
+                              }
                             </button>
                           )}
                         </div>
